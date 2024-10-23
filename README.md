@@ -1,3 +1,7 @@
+
+![translate](https://github.com/user-attachments/assets/1c666adc-7c38-4549-b7c3-9ad5f09d8ad0)
+
+
 # translate
 Translate to english locally, fast and easily. 
 
