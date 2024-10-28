@@ -16,16 +16,24 @@ In most screen capture software settings this is an option instead of saving eve
 
 # How to use
 
+Get Translate Local Script
+
 Download Tesseract from the link below and when installing select all the extra options to download. It should be 800mb-900mb installation size.
 
 
 https://github.com/UB-Mannheim/tesseract/wiki
 
 
-Update the install path on line 10 of the script.
+Update the install path on line 31 of the script.
 
 
-pip install pytesseract Pillow googletrans==4.0.0-rc1 deep-translator pyperclip tqdm colorama
+Download LLM Model mBart50 from huggingface. It should be ~2.5GB. Use bin for CPU and Safetensors for CUDA. Save in './facebook/mbart-large-50-many-to-many-mmt/'
 
 
-Run the script
+https://huggingface.co/facebook/mbart-large-50-many-to-many-mmt/tree/main
+
+
+Update the install path on line 32 of the script.
+
+
+pip install pytesseract Pillow transformers torch sentencepiece pyperclip tqdm colorama langdetect
