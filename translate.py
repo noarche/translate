@@ -1,121 +1,144 @@
 import pytesseract
 from PIL import ImageGrab
-from deep_translator import GoogleTranslator, exceptions
 import pyperclip
 from tqdm import tqdm
 import time
 import hashlib
 from colorama import Fore, Style, init
 from langdetect import detect, LangDetectException
+import threading
+import logging
+from transformers import MBartForConditionalGeneration, MBart50Tokenizer
+import torch
+
 
 init(autoreset=True)
+logging.basicConfig(level=logging.INFO)
 
-# Configuration
+
+logging.getLogger("PIL").setLevel(logging.WARNING)
+
+
 TESSERACT_PATH = r'C:\tesseract\tesseract.exe'
 CHECK_INTERVAL = 2
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
 
 def get_text_from_image(image):
     """
     Extract text from a given image using OCR.
-    
-    Args:
-        image (PIL.Image.Image): The image to process.
-        
-    Returns:
-        str: The text extracted from the image.
     """
     try:
         extracted_text = pytesseract.image_to_string(image)
         return extracted_text.strip()
     except Exception as e:
-        print(Fore.RED + f"Error during OCR process: {e}")
+        logging.error(f"Error during OCR process: {e}")
         return None
 
-def translate_text(text, target_language='en'):
+def load_mbart50_model():
     """
-    Translate the given text to the specified target language.
-    
-    Args:
-        text (str): The text to translate.
-        target_language (str): The language code for the target language (default is English).
-    
-    Returns:
-        str: The translated text.
+    Load the mBART50 model and tokenizer for multilingual translation from a local path.
     """
-    try:
-        try:
-            detected_language = detect(text)
-            print(Fore.YELLOW + f"\nDetected source language: {detected_language}")
-        except LangDetectException:
-            print(Fore.RED + "Could not detect the language of the text.")
-            detected_language = 'auto'
+    model_name = "./facebook/mbart-large-50-many-to-one-mmt"
+    tokenizer = MBart50Tokenizer.from_pretrained(model_name)
+    model = MBartForConditionalGeneration.from_pretrained(model_name).to(DEVICE)
+    return model, tokenizer
 
-        translator = GoogleTranslator(source=detected_language, target=target_language)
-        translated_text = translator.translate(text)
+def translate_with_mbart50(text, source_language, model, tokenizer):
+    """
+    Translate the given text using the mBART50 model.
+    """
 
-        if translated_text.strip().lower() == text.strip().lower() and detected_language != 'en':
-            print(Fore.YELLOW + "Retrying translation with automatic language detection...")
-            translator = GoogleTranslator(source='auto', target=target_language)
-            translated_text = translator.translate(text)
+    tokenizer.src_lang = source_language
 
-        return translated_text
-    except exceptions.ServerException as e:
-        print(Fore.RED + f"Translation error: {e}")
-        return None
+
+    encoded_text = tokenizer(text, return_tensors="pt", padding=True).to(DEVICE)
+
+
+    generated_tokens = model.generate(**encoded_text, forced_bos_token_id=tokenizer.lang_code_to_id["en_XX"])
+
+
+    translated_text = tokenizer.decode(generated_tokens[0], skip_special_tokens=True)
+    return translated_text
 
 def display_progress_bar(duration=1):
     """
     Display a progress bar for a given duration to simulate processing time.
-    
-    Args:
-        duration (int): The duration in seconds for the progress bar to complete.
     """
-    for _ in tqdm(range(100), desc="Processing", ncols=100, bar_format="{l_bar}%s{bar}%s{r_bar}" % (Fore.CYAN, Fore.RESET)):
+    for _ in tqdm(range(100), desc="Processing", ncols=100, bar_format="{l_bar}%s{bar}%s{r_bar}" % (Fore.CYAN, Fore.RESET), leave=True):
         time.sleep(duration / 100)
 
-def monitor_clipboard():
+def perform_translation(text, model, tokenizer):
+    """
+    Perform the translation in a separate thread to avoid blocking.
+    """
+    try:
+
+        source_lang = detect(text)
+        source_lang_code = f"{source_lang}_XX"
+        logging.info(f"Detected source language: {source_lang}")
+
+
+        translated_text = translate_with_mbart50(text, source_lang_code, model, tokenizer)
+
+        print(Fore.CYAN + "\nTranslated Text:\n", Fore.RESET + translated_text)
+
+    except LangDetectException:
+        print(Fore.RED + "Could not detect the language of the text.")
+    except Exception as e:
+        logging.error(f"Failed to translate the text: {e}")
+        print(Fore.RED + "\nFailed to translate the text.")
+
+def monitor_clipboard(model, tokenizer):
     """
     Monitor the clipboard for new images and process them if detected.
     """
     last_image_hash = None
-    
+    last_text = None
+
     while True:
+
+        text = pyperclip.paste()
+        if text != last_text and text.strip():
+            last_text = text
+            print(Fore.YELLOW + "\nTranslating the text from clipboard...")
+            display_progress_bar(duration=1)
+
+
+            translation_thread = threading.Thread(target=perform_translation, args=(text, model, tokenizer))
+            translation_thread.start()
+
+
         image = ImageGrab.grabclipboard()
-        
         if isinstance(image, ImageGrab.Image.Image):
             image_hash = hashlib.md5(image.tobytes()).hexdigest()
-            
+
             if image_hash != last_image_hash:
-                print(Fore.YELLOW + "\nNew image detected. Extracting text...")
-                
                 last_image_hash = image_hash
-                
+                logging.info("New image detected. Extracting text...")
+
                 text = get_text_from_image(image)
-                
+
                 if text:
                     print(Fore.GREEN + "\nExtracted Text:\n", Fore.RESET + text)
-                    
-                    print(Fore.YELLOW + "\nTranslating the text...")
+
+                    print(Fore.YELLOW + "\nTranslating the extracted text...")
                     display_progress_bar(duration=1)
-                    
-                    translated_text = translate_text(text)
-                    if translated_text:
-                        print(Fore.CYAN + "\nTranslated Text:\n", Fore.RESET + translated_text)
-                        
-                        pyperclip.copy(translated_text)
-                        print(Fore.GREEN + "\nTranslated text copied to the clipboard.")
-                    else:
-                        print(Fore.RED + "\nFailed to translate the text.")
+
+
+                    translation_thread = threading.Thread(target=perform_translation, args=(text, model, tokenizer))
+                    translation_thread.start()
                 else:
                     print(Fore.RED + "No text was extracted from the image.")
-                
+
         time.sleep(CHECK_INTERVAL)
 
 if __name__ == '__main__':
-    print(Fore.CYAN + "Monitoring the clipboard for new images. Press Ctrl+C to exit.")
+    print(Fore.CYAN + "Monitoring the clipboard for new images and text. Press Ctrl+C to exit.")
+
+    model, tokenizer = load_mbart50_model()
     try:
-        monitor_clipboard()
+        monitor_clipboard(model, tokenizer)
     except KeyboardInterrupt:
         print(Fore.RED + "\nMonitoring stopped.")
